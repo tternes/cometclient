@@ -37,6 +37,7 @@ typedef enum
 @property (nonatomic, readonly) DDCometState state;
 @property (nonatomic, readonly) NSDictionary *advice;
 @property (nonatomic, assign) id<DDCometClientDelegate> delegate;
+@property (nonatomic, retain) NSArray *cookies;
 
 - (id)initWithURL:(NSURL *)endpointURL;
 - (void)scheduleInRunLoop:(NSRunLoop *)runLoop forMode:(NSString *)mode;

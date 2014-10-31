@@ -3,7 +3,6 @@
 #import "DDCometClient.h"
 #import "DDCometMessage.h"
 #import "DDQueue.h"
-#import "JSON.h"
 
 
 @interface DDCometLongPollingTransport ()
@@ -12,6 +11,9 @@
 - (NSArray *)outgoingMessages;
 - (NSURLRequest *)requestWithMessages:(NSArray *)messages;
 - (id)keyWithConnection:(NSURLConnection *)connection;
+
+@property (nonatomic, retain) NSArray *cookies;
+@property (nonatomic, retain) NSTimer *pollTimer;
 
 @end
 
@@ -23,12 +25,14 @@
 	{
 		m_client = [client retain];
 		m_responseDatas = [[NSMutableDictionary alloc] initWithCapacity:2];
+		self.cookies = client.cookies;
 	}
 	return self;
 }
 
 - (void)dealloc
 {
+	self.cookies = nil;
 	[m_responseDatas release];
 	[m_client release];
 	[super dealloc];
@@ -36,80 +40,72 @@
 
 - (void)start
 {
-	[self performSelectorInBackground:@selector(main) withObject:nil];
+	self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(longPollTimerFired:) userInfo:nil repeats:YES];
 }
 
 - (void)cancel
 {
+	[self.pollTimer invalidate];
+	self.pollTimer = nil;
 	m_shouldCancel = YES;
 }
 
 #pragma mark -
 
-- (void)main
+- (void)longPollTimerFired:(NSTimer *)timer
 {
-	do
-	{
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-		NSArray *messages = [self outgoingMessages];
-		
-		BOOL isPolling;
-		if ([messages count] == 0)
-		{
-			if (m_client.state == DDCometStateConnected)
-			{
-				isPolling = YES;
-				DDCometMessage *message = [DDCometMessage messageWithChannel:@"/meta/connect"];
-				message.clientID = m_client.clientID;
-				message.connectionType = @"long-polling";
-				NSLog(@"Sending long-poll message: %@", message);
-				messages = [NSArray arrayWithObject:message];
-			}
-			else
-			{
-				[NSThread sleepForTimeInterval:0.01];
-			}
-		}
-		
-		NSURLConnection *connection = [self sendMessages:messages];
-		if (connection)
-		{
-			NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
-			while ([runLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]])
-			{
-				if (isPolling)
-				{
-					if (m_shouldCancel)
-					{
-						m_shouldCancel = NO;
-						[connection cancel];
-					}
-					else
-					{
-						messages = [self outgoingMessages];
-						[self sendMessages:messages];
-					}
-				}
-			}
-		}
-		[pool release];
-	} while (m_client.state != DDCometStateDisconnected);
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    NSArray *messages = [self outgoingMessages];
+    
+    BOOL isPolling = NO;
+    if ([messages count] == 0)
+    {
+        if (m_client.state == DDCometStateConnected)
+        {
+            isPolling = YES;
+            DDCometMessage *message = [DDCometMessage messageWithChannel:@"/meta/connect"];
+            message.clientID = m_client.clientID;
+            message.connectionType = @"long-polling";
+            assert(message.clientID);
+            messages = [NSArray arrayWithObject:message];
+        }
+        else
+        {
+            [NSThread sleepForTimeInterval:0.5];
+        }
+    }
+    
+    NSURLConnection *connection = [self sendMessages:messages];
+    if (connection)
+    {
+        if (isPolling)
+        {
+            if (m_shouldCancel)
+            {
+                m_shouldCancel = NO;
+                [connection cancel];
+            }
+            else
+            {
+                messages = [self outgoingMessages];
+                [self sendMessages:messages];
+            }
+        }
+    }
+    
+    [pool release];
 }
 
 - (NSURLConnection *)sendMessages:(NSArray *)messages
 {
-	NSURLConnection *connection = nil;
-	if ([messages count] != 0)
-	{
-		NSURLRequest *request = [self requestWithMessages:messages];
-		connection = [NSURLConnection connectionWithRequest:request delegate:self];
-		if (connection)
-		{
-			NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
-			[connection scheduleInRunLoop:runLoop forMode:[runLoop currentMode]];
-			[connection start];
-		}
-	}
+    NSURLConnection *connection = nil;
+    if ([messages count] != 0)
+    {
+        NSURLRequest *request = [self requestWithMessages:messages];
+        connection = [NSURLConnection connectionWithRequest:request delegate:self];
+        [connection start];
+    }
+
 	return connection;
 }
 
@@ -126,13 +122,19 @@
 - (NSURLRequest *)requestWithMessages:(NSArray *)messages
 {
 	NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:m_client.endpointURL];
-	
-	SBJsonWriter *jsonWriter = [[SBJsonWriter alloc] init];    
-    NSData *body = [jsonWriter dataWithObject:messages];
-    [jsonWriter release];
-	
+
+    NSMutableArray *finalMessages = [NSMutableArray array];
+    for(DDCometMessage *message in messages)
+        [finalMessages addObject:[message proxyForJson]];
+
+    NSData *body = [NSJSONSerialization dataWithJSONObject:finalMessages options:0 error:nil];
+
+	if(self.cookies)
+		[request setAllHTTPHeaderFields:[NSHTTPCookie requestHeaderFieldsWithCookies:self.cookies]];
+    
 	[request setHTTPMethod:@"POST"];
 	[request setValue:@"application/json;charset=UTF-8" forHTTPHeaderField:@"Content-Type"];
+    
 	[request setHTTPBody:body];
 	
 	NSNumber *timeout = [m_client.advice objectForKey:@"timeout"];
@@ -165,10 +167,8 @@
 	NSData *responseData = [[m_responseDatas objectForKey:[self keyWithConnection:connection]] retain];
 	[m_responseDatas removeObjectForKey:[self keyWithConnection:connection]];
 	
-	SBJsonParser *parser = [[SBJsonParser alloc] init];
-	NSArray *responses = [parser objectWithData:responseData];
-	[parser release];
-	parser = nil;
+	NSArray *responses = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:nil];
+
 	[responseData release];
 	responseData = nil;
 	
