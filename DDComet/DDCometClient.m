@@ -87,7 +87,7 @@
 	DDCometSubscription *subscription = [[[DDCometSubscription alloc] initWithChannel:channel target:target selector:selector] autorelease];
 	@synchronized(m_pendingSubscriptions)
 	{
-		[m_pendingSubscriptions setObject:subscription forKey:message.ID];
+		[m_pendingSubscriptions setObject:subscription forKey:message.channel];
 	}
 	[self sendMessage:message];
 	return message;
@@ -147,7 +147,7 @@
 	message.clientID = m_clientID;
 	if (!message.ID)
 		message.ID = [self nextMessageID];
-	NSLog(@"Sending message: %@", message);
+//	NSLog(@"Sending message: %@", message);
 	[m_outgoingQueue addObject:message];
 	
 	if (m_transport == nil)
@@ -159,7 +159,7 @@
 
 - (void)handleMessage:(DDCometMessage *)message
 {
-	NSLog(@"Message received: %@", message);
+//	NSLog(@"Message received: %@", message);
 	NSString *channel = message.channel;
 	if ([channel hasPrefix:@"/meta/"])
 	{
@@ -215,9 +215,9 @@
 			DDCometSubscription *subscription = nil;
 			@synchronized(m_pendingSubscriptions)
 			{
-				subscription = [[[m_pendingSubscriptions objectForKey:message.ID] retain] autorelease];
+				subscription = [[[m_pendingSubscriptions objectForKey:message.channel] retain] autorelease];
 				if (subscription)
-					[m_pendingSubscriptions removeObjectForKey:message.ID];
+					[m_pendingSubscriptions removeObjectForKey:message.channel];
 			}
 			if ([message.successful boolValue])
 			{
